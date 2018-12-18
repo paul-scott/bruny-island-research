@@ -81,14 +81,3 @@ def download():
             logging.debug('saved forecast to file to dest: {}'.format(combined))
 
     logging.info('completing forecasts.py')
-
-
-
-
-
-
-
-
-
-
-

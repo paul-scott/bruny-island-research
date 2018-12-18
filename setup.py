@@ -7,4 +7,5 @@ setup(name='bruny-island-forecast-downloader',
       author='Jared McCorkindale',
       author_email='jared.mccorkindale@anu.edu.au',
       packages=['bruny-island-research'],
+      install_requires=['requests'],
       zip_safe=False)
