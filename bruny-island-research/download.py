@@ -62,7 +62,7 @@ def download():
         logging.debug('forecast url: {}'.format(forecast_url))
         forecast_response = requests.get(forecast_url, stream=True)
         # Handle case where request to solcast fails
-        if not forecast_response:
+        if not forecast_response.ok:
             logging.error('forecast request failed for site with id: {} | response status code: {}'
                           .format(site_id, forecast_response.status_code))
             logging.debug('forecast response text: {}'.format(forecast_response.text))
