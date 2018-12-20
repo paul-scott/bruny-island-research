@@ -35,7 +35,8 @@ def download():
     logging.debug('storing solcast forecast response in directory: {}'.format(args.dest))
 
     # Retrieve all sites that need forecasts
-    sites_url = 'https://api.solcast.com.au/weather_sites/search?tags=bruny-island-research&format=json&api_key={}'\
+    sites_url = \
+        'https://api.solcast.com.au/utility_scale_sites/search?tags=bruny-island-research&format=json&api_key={}'\
         .format(args.key)
     logging.debug('retrieving all sites from url: {}'.format(sites_url))
     sites_response = requests.get(sites_url)
@@ -55,7 +56,8 @@ def download():
     for site in sites:
         site_id = site['resource_id']
         logging.debug('retrieving forecast for site with id: {}'.format(site_id))
-        forecast_url = 'https://api.solcast.com.au/weather_sites/{}/forecasts?format=csv&api_key={}'\
+        forecast_url = \
+            'https://api.solcast.com.au/utility_scale_sites/{}/weather/forecasts?period=PT5M&format=csv&api_key={}'\
             .format(site_id, args.key)
         logging.debug('forecast url: {}'.format(forecast_url))
         forecast_response = requests.get(forecast_url, stream=True)
