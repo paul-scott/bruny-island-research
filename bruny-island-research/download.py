@@ -1,6 +1,6 @@
 import argparse
 import logging
-from datetime import datetime
+import datetime as dt
 import requests
 import psycopg2 as sql
 from psycopg2.extras import Json
@@ -11,33 +11,32 @@ def download():
     logging.basicConfig(level=logging.DEBUG)
     logging.info('running forecasts.py')
     # Setup timestamp for file organisation
-    utc_now = datetime.strftime(datetime.utcnow(), '%y-%m-%dT%H-%M-%S')
+    utc_now = dt.datetime.now(tz=dt.timezone.utc)
     logging.debug('set program timestamp: {}'.format(utc_now))
     # Setup argument parser
     parser = argparse.ArgumentParser()
     parser.add_argument('key', help='api key for solcast account')
     parser.add_argument('database', help='database name')
     parser.add_argument('--quantity', default='forecasts',
-                        help='request / table name')
+                        help='request / table name (forecasts or estimated_actuals)')
     parser.add_argument('--create', action='store_true',
                         help='create database table')
     parser.add_argument('--take', type=int, default=12 * 24,
                         help='maximum number of time points to take')
-    #parser.add_argument('--target', default='utility_scale_sites',
-    #                    help='utility_scale_sites or weather_sites')
-    # Above doesn't work because utiltiy scale has extra 'weather' in url
+    parser.add_argument('--flatten', action='store_true',
+                        help='lift json time steps to table level')
     args = parser.parse_args()
 
     conn = sql.connect(dbname=args.database)
     if args.create:
         create_table(conn, args.quantity)
 
-    url_prefix = 'https://api.solcast.com.au/{}'.format(args.target)
-
     # Retrieve all sites
     sites_url = (
-        url_prefix
-        + '/search?tags=bruny-island-research&format=json&api_key={}'.format(args.key)
+        'https://api.solcast.com.au/utility_scale_sites/'
+        + 'search?tags=bruny-island-research&format=json&api_key={}'.format(args.key)
+        #'https://api.solcast.com.au/weather_sites/'
+        #+ 'search?tags=bruny-island-research&format=json&api_key={}'.format(args.key)
     )
     logging.debug('retrieving all sites from url: {}'.format(sites_url))
     sites_response = requests.get(sites_url)
@@ -53,34 +52,42 @@ def download():
     sites = [site for site in sites_json['sites']]
     logging.debug('number of sites: {}'.format(len(sites)))
 
-    # Retrieve "quantity" for each site and store the response in csv
+    # Retrieve "quantity" for each site and store the response in database
+    count = 0
     for site in sites:
         site_id = site['resource_id']
-        logging.debug('retrieving forecast for site with id: {}'.format(site_id))
+        logging.debug('retrieving data for site with id: {}'.format(site_id))
         quantity_url = (
-            url_prefix
-            + '/{}/weather/{}?period=PT5M&format=json&api_key={}'.format(site_id, args.quantity, args.key)
+            'https://api.solcast.com.au/utility_scale_sites/'
+            + '{}/weather/{}?period=PT5M&format=json&api_key={}'.format(site_id, args.quantity, args.key)
+            #'https://api.solcast.com.au/weather_sites/'
+            #+ '{}/{}?period=PT5M&format=json&api_key={}'.format(site_id, args.quantity, args.key)
         )
 
-        forecast_response = requests.get(quantity_url, stream=True)
-        if forecast_response.ok:
-            logging.debug('forecast request successful for site with id: {}'.format(site_id))
-            forecast = forecast_response.json()[args.quantity][:args.take]
+        data_response = requests.get(quantity_url, stream=True)
+        if data_response.ok:
+            logging.debug('request successful for site with id: {}'.format(site_id))
+            data = data_response.json()[args.quantity][:args.take]
             try:
-                insert(conn, args.quantity, utc_now, site_id, forecast)
+                if args.flatten:
+                    count += flat_insert(conn, args.quantity, site_id, data)
+                else:
+                    insert(conn, args.quantity, utc_now, site_id, data)
+                    count += 1
             except sql.Error as err:
                 logging.error('Error on inserting resource {}: {}'.format(site_id, err))
         else:
-            logging.error('forecast request failed for site with id: {} | response status code: {}'
-                          .format(site_id, forecast_response.status_code))
-            logging.debug('forecast response text: {}'.format(forecast_response.text))
+            logging.error('request failed for site with id: {} | response status code: {}'
+                          .format(site_id, data_response.status_code))
+            logging.debug('response text: {}'.format(data_response.text))
+    logging.info('Inserted {} entries'.format(count))
 
 
 def create_table(conn, quantity):
     c = conn.cursor()
     try:
         c.execute("CREATE TABLE {} (".format(quantity)
-                  + "time INTEGER NOT NULL,"
+                  + "time TIMESTAMP (0) WITH TIME ZONE NOT NULL,"
                   + "resource BIGINT NOT NULL,"
                   + "data JSONB,"
                   + "PRIMARY KEY (time, resource)"
@@ -98,12 +105,49 @@ def insert(conn, table, time, resource, value):
         with conn.cursor() as curs:
             curs = conn.cursor()
             curs.execute("INSERT INTO forecasts VALUES (%s, %s, %s)",
-                         (time.timestamp(), rid, Json(value)))
+                         (time, rid, Json(value)))
+
+
+def flat_insert(conn, table, resource, value):
+    rid = resource_to_bigint(resource)
+    count = 0
+    with conn:
+        with conn.cursor() as curs:
+            curs = conn.cursor()
+            for row in value:
+                time = parse_time(row['period_end'])
+                curs.execute("INSERT INTO forecasts VALUES (%s, %s, %s)"
+                             + " ON CONFLICT DO NOTHING",
+                             (time, rid, Json(row)))
+                count += 1
+    return count
+
+
+def parse_time(time_str):
+    """ Parse the returned time format
+
+    Doesn't conform to iso8601 standard.
+    The "microseconds" have 7 digits so doesn't work with %f.
+    Don't care about sub-seconds.
+    This will break if they ever change this.
+    """
+    time, rhs = time_str.split('.')
+    if rhs[-1] != 'Z':
+        raise ValueError('Time not in UTC: {}'.format(time_str))
+    return dt.datetime.strptime(time + '+0000', '%Y-%m-%dT%H:%M:%S%z')
 
 
 def resource_to_bigint(resource):
-    int(resource.replace('-', ''), 16)
+    """ Convert resource_id type to postgres bigint.
+
+    bigint is signed, so need subtract by offset.
+    Another option would be to pad it as UUID.
+    """
+    return int(resource.replace('-', ''), 16) - (16**16 // 2)
 
 
 if __name__ == '__main__':
     download()
+
+# python3 download.py <KEY> solcast --quantity forecasts
+# python3 download.py <KEY> solcast --quantity estimated_actuals --flatten
