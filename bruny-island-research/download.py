@@ -1,9 +1,9 @@
 import argparse
 import logging
-import os
 from datetime import datetime
-
 import requests
+import psycopg2 as sql
+from psycopg2.extras import Json
 
 
 def download():
@@ -15,26 +15,21 @@ def download():
     logging.debug('set program timestamp: {}'.format(utc_now))
     # Setup argument parser
     parser = argparse.ArgumentParser()
-    parser.add_argument('--key', dest='key', help='api key for solcast account')
-    parser.add_argument('--dest', dest='dest',
-                        help='absolute path to existing directory to which forecasts will be stored')
+    parser.add_argument('key', help='api key for solcast account')
+    parser.add_argument('database', help='database name')
+    parser.add_argument('--quantity', default='forecasts',
+                        help='request / table name')
+    parser.add_argument('--create', action='store_true',
+                        help='create database table')
+    parser.add_argument('--take', type=int, default=12 * 24,
+                        help='maximum number of time points to take')
     args = parser.parse_args()
 
-    # Check program arguments
-    # If argument aren't valid, exit program
-    if not args.key:
-        raise ValueError('argument provided for --key is not valid | key: {}'.format(args.key))
+    conn = sql.connect(args.database, timeout=10)
+    if args.create:
+        create_table(conn, args.quantity)
 
-    if not args.dest:
-        raise ValueError('argument provided for --dest is not valid | dest: {}'.format(args.key))
-
-    if not os.path.exists(args.dest):
-        raise OSError('directory does not exist | dest: {}'.format(args.dest))
-
-    logging.debug('using solcast api key: {}'.format(args.key))
-    logging.debug('storing solcast forecast response in directory: {}'.format(args.dest))
-
-    # Retrieve all sites that need forecasts
+    # Retrieve all sites
     sites_url = \
         'https://api.solcast.com.au/utility_scale_sites/search?tags=bruny-island-research&format=json&api_key={}'\
         .format(args.key)
@@ -44,7 +39,7 @@ def download():
     if not sites_response.ok:
         logging.error('sites request failed | response status code: {}'.format(sites_response.status_code))
         logging.debug('sites response text: {}'.format(sites_response.text))
-        logging.debug('terminating forecasts.py')
+        logging.debug('terminating')
         return
     # Else, handle successful response from solcast and extract sites from response
     logging.debug('sites request successful')
@@ -52,34 +47,57 @@ def download():
     sites = [site for site in sites_json['sites']]
     logging.debug('number of sites: {}'.format(len(sites)))
 
-    # Retrieve forecasts for each site and store the response in csv
+    # Retrieve "quantity" for each site and store the response in csv
     for site in sites:
         site_id = site['resource_id']
         logging.debug('retrieving forecast for site with id: {}'.format(site_id))
         forecast_url = \
-            'https://api.solcast.com.au/utility_scale_sites/{}/weather/forecasts?period=PT5M&format=csv&api_key={}'\
-            .format(site_id, args.key)
-        logging.debug('forecast url: {}'.format(forecast_url))
+            'https://api.solcast.com.au/utility_scale_sites/{}/weather/{}?period=PT5M&format=json&api_key={}'\
+            .format(site_id, args.quantity, args.key)
+
         forecast_response = requests.get(forecast_url, stream=True)
-        # Handle case where request to solcast fails
-        if not forecast_response.ok:
+        if forecast_response.ok:
+            logging.debug('forecast request successful for site with id: {}'.format(site_id))
+            forecast = forecast_response.json()[args.quantity][:args.take]
+            try:
+                insert(conn, args.quantity, utc_now, site_id, forecast)
+            except sql.Error as err:
+                logging.error('Error on inserting resource {}: {}'.format(site_id, err))
+        else:
             logging.error('forecast request failed for site with id: {} | response status code: {}'
                           .format(site_id, forecast_response.status_code))
             logging.debug('forecast response text: {}'.format(forecast_response.text))
-            logging.debug('skipping site with id: {}'.format(site_id))
-            # Skip site and move to next
-            next(sites, None)
-            continue
-        # Else, handle forecast response and save to file destination
-        else:
-            logging.debug('forecast request successful for site with id: {}'.format(site_id))
-            # Generate unique file name with timestamp and site id
-            file_name = '{}_{}.csv'.format(site_id, utc_now)
-            combined = os.path.join(args.dest, file_name)
-            # Save response content to file location
-            with open(combined, 'wb') as file:
-                for chunk in forecast_response.iter_content(chunk_size=1024):
-                    file.write(chunk)
-            logging.debug('saved forecast to file to dest: {}'.format(combined))
 
-    logging.info('completing forecasts.py')
+
+def create_table(conn, quantity):
+    c = conn.cursor()
+    try:
+        c.execute("CREATE TABLE %s ("
+                  + "time INTEGER NOT NULL,"
+                  + "resource BIGINT NOT NULL,"
+                  + "data JSONB,"
+                  + "PRIMARY KEY (time, resource)"
+                  + ")",
+                  (quantity)
+                  )
+        conn.commit()
+        logging.debug('Table {} created'.format(quantity))
+    except sql.OperationalError as err:
+        logging.debug('Error creating table: {}'.format(err))
+
+
+def insert(conn, table, time, resource, value):
+    rid = resource_to_bigint(resource)
+    with conn:
+        with conn.cursor() as curs:
+            curs = conn.cursor()
+            curs.execute("INSERT INTO forecasts VALUES (%s, %s, %s)",
+                         (time.timestamp(), rid, Json(value)))
+
+
+def resource_to_bigint(resource):
+    int(resource.replace('-', ''), 16)
+
+
+if __name__ == '__main__':
+    download()
