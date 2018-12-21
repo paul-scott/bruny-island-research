@@ -23,16 +23,22 @@ def download():
                         help='create database table')
     parser.add_argument('--take', type=int, default=12 * 24,
                         help='maximum number of time points to take')
+    #parser.add_argument('--target', default='utility_scale_sites',
+    #                    help='utility_scale_sites or weather_sites')
+    # Above doesn't work because utiltiy scale has extra 'weather' in url
     args = parser.parse_args()
 
-    conn = sql.connect(args.database, timeout=10)
+    conn = sql.connect(dbname=args.database)
     if args.create:
         create_table(conn, args.quantity)
 
+    url_prefix = 'https://api.solcast.com.au/{}'.format(args.target)
+
     # Retrieve all sites
-    sites_url = \
-        'https://api.solcast.com.au/utility_scale_sites/search?tags=bruny-island-research&format=json&api_key={}'\
-        .format(args.key)
+    sites_url = (
+        url_prefix
+        + '/search?tags=bruny-island-research&format=json&api_key={}'.format(args.key)
+    )
     logging.debug('retrieving all sites from url: {}'.format(sites_url))
     sites_response = requests.get(sites_url)
     # Handle case where request to solcast fails
@@ -51,11 +57,12 @@ def download():
     for site in sites:
         site_id = site['resource_id']
         logging.debug('retrieving forecast for site with id: {}'.format(site_id))
-        forecast_url = \
-            'https://api.solcast.com.au/utility_scale_sites/{}/weather/{}?period=PT5M&format=json&api_key={}'\
-            .format(site_id, args.quantity, args.key)
+        quantity_url = (
+            url_prefix
+            + '/{}/weather/{}?period=PT5M&format=json&api_key={}'.format(site_id, args.quantity, args.key)
+        )
 
-        forecast_response = requests.get(forecast_url, stream=True)
+        forecast_response = requests.get(quantity_url, stream=True)
         if forecast_response.ok:
             logging.debug('forecast request successful for site with id: {}'.format(site_id))
             forecast = forecast_response.json()[args.quantity][:args.take]
@@ -72,13 +79,12 @@ def download():
 def create_table(conn, quantity):
     c = conn.cursor()
     try:
-        c.execute("CREATE TABLE %s ("
+        c.execute("CREATE TABLE {} (".format(quantity)
                   + "time INTEGER NOT NULL,"
                   + "resource BIGINT NOT NULL,"
                   + "data JSONB,"
                   + "PRIMARY KEY (time, resource)"
-                  + ")",
-                  (quantity)
+                  + ")"
                   )
         conn.commit()
         logging.debug('Table {} created'.format(quantity))
