@@ -104,7 +104,7 @@ def insert(conn, table, time, resource, value):
     with conn:
         with conn.cursor() as curs:
             curs = conn.cursor()
-            curs.execute("INSERT INTO forecasts VALUES (%s, %s, %s)",
+            curs.execute("INSERT INTO {} VALUES (%s, %s, %s)".format(table),
                          (time, rid, Json(value)))
 
 
@@ -116,7 +116,7 @@ def flat_insert(conn, table, resource, value):
             curs = conn.cursor()
             for row in value:
                 time = parse_time(row['period_end'])
-                curs.execute("INSERT INTO forecasts VALUES (%s, %s, %s)"
+                curs.execute("INSERT INTO {} VALUES (%s, %s, %s)".format(table)
                              + " ON CONFLICT DO NOTHING",
                              (time, rid, Json(row)))
                 count += 1
@@ -151,3 +151,8 @@ if __name__ == '__main__':
 
 # python3 download.py <KEY> solcast --quantity forecasts
 # python3 download.py <KEY> solcast --quantity estimated_actuals --flatten
+
+# All ghi readings:
+# SELECT , data->'ghi' FROM estimated_actuals;
+# First prediction period end and ghi readings:
+# SELECT data->0->'period_end', data->0->'ghi' FROM forecasts;
