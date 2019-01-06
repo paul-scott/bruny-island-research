@@ -8,7 +8,7 @@ from psycopg2.extras import Json
 
 def download():
     # Setup logging configuration
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO)
     logging.info('running forecasts.py')
     # Setup timestamp for file organisation
     utc_now = dt.datetime.now(tz=dt.timezone.utc)
@@ -151,6 +151,10 @@ if __name__ == '__main__':
 
 # python3 download.py <KEY> solcast --quantity forecasts
 # python3 download.py <KEY> solcast --quantity estimated_actuals --flatten
+
+# As cronjob
+# */5 * * * * sleep 120 && /usr/bin/systemd-cat -t solcast-forecasts /usr/bin/env python3 <forecasts>
+# 2 */12 * * * /usr/bin/systemd-cat -t solcast-forecasts /usr/bin/env python3 <estimated_actuals>
 
 # All ghi readings:
 # SELECT , data->'ghi' FROM estimated_actuals;
