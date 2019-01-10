@@ -1,9 +1,7 @@
-import json
 import argparse
 import logging
 import datetime as dt
 import psycopg2 as sql
-from psycopg2.extras import Json
 
 
 def resource_to_bigint(resource):
@@ -51,14 +49,12 @@ def parse_time(time_str):
 
 def extract_forecasts_data(row):
     t_for = last_5_min(row[0])
-    
+
     r = []
     r.append(t_for)
     for i, data in enumerate(row[1]):
-        print(data)
         t_expect = t_for + (i + 1) * dt.timedelta(minutes=5)
         t = parse_time(data['period_end'])
-        print((t_expect, t))
         assert(t_expect == t)
         ghi = data['ghi']
         r.append(ghi)
